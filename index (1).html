@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scanner d'entrée</title>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#2a3138; --text:#e6edf3; --muted:#8b949e;
+    --accent:#3fb950; --warn:#d29922; --bad:#f85149;
+    padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;}
+  .wrap{max-width:480px; margin:0 auto; padding:18px 16px 28px;}
+  h1{font-size:19px; font-weight:600; margin:4px 0 14px; text-align:center;}
+  .card{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:14px; margin-bottom:14px;}
+  label{display:block; font-size:12px; color:var(--muted); margin-bottom:6px;}
+  input[type=text]{width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border);
+    background:#0d1117; color:var(--text); font-size:14px;}
+  .row{display:flex; gap:8px; margin-top:8px;}
+  button{border:none; border-radius:8px; padding:10px 14px; font-size:14px; font-weight:600;
+    cursor:pointer; color:#fff;}
+  .btn-save{background:#238636; flex:1;}
+  .btn-toggle{background:transparent; color:var(--muted); text-decoration:underline; padding:0; font-weight:400;}
+  #reader{width:100%; border-radius:12px; overflow:hidden; border:1px solid var(--border);}
+  #status{margin-top:14px; padding:18px; border-radius:12px; background:var(--panel);
+    border:1px solid var(--border); text-align:center; font-size:18px; font-weight:600; min-height:66px;}
+  #status.ok{background:rgba(63,185,80,.15); border-color:var(--accent); color:var(--accent);}
+  #status.dup{background:rgba(210,153,34,.15); border-color:var(--warn); color:var(--warn);}
+  #status.bad{background:rgba(248,81,73,.15); border-color:var(--bad); color:var(--bad);}
+  #detail{font-size:13px; font-weight:400; color:var(--text); margin-top:6px; line-height:1.5;}
+  .hint{font-size:12px; color:var(--muted); text-align:center; margin-top:10px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎫 Scanner d'entrée</h1>
+
+  <div class="card" id="settingsCard">
+    <label for="urlInput">Lien de l'application (se termine par /exec)</label>
+    <input type="text" id="urlInput" placeholder="https://script.google.com/macros/s/.../exec">
+    <div class="row">
+      <button class="btn-save" id="saveBtn">Enregistrer et démarrer la caméra</button>
+    </div>
+  </div>
+
+  <div id="scanArea" style="display:none;">
+    <div id="reader"></div>
+    <div id="status">Prêt à scanner…</div>
+    <div class="hint"><button class="btn-toggle" id="changeUrlBtn">changer le lien</button></div>
+  </div>
+</div>
+
+<script>
+  const urlInput = document.getElementById('urlInput');
+  const settingsCard = document.getElementById('settingsCard');
+  const scanArea = document.getElementById('scanArea');
+  const statusEl = document.getElementById('status');
+  let baseUrl = '';
+  let scanner = null;
+  let busy = false;
+
+  function loadSaved() {
+    try {
+      const saved = localStorage.getItem('scanner_exec_url');
+      if (saved) urlInput.value = saved;
+    } catch (e) {}
+  }
+
+  document.getElementById('saveBtn').addEventListener('click', () => {
+    const v = urlInput.value.trim();
+    if (!v.includes('/exec')) {
+      alert('Colle bien le lien complet qui se termine par /exec');
+      return;
+    }
+    baseUrl = v;
+    try { localStorage.setItem('scanner_exec_url', v); } catch (e) {}
+    settingsCard.style.display = 'none';
+    scanArea.style.display = 'block';
+    startCamera();
+  });
+
+  document.getElementById('changeUrlBtn').addEventListener('click', () => {
+    if (scanner) { scanner.stop().catch(()=>{}); }
+    scanArea.style.display = 'none';
+    settingsCard.style.display = 'block';
+  });
+
+  function startCamera() {
+    scanner = new Html5Qrcode('reader');
+    Html5Qrcode.getCameras().then(devices => {
+      if (!devices || !devices.length) {
+        statusEl.className = 'bad';
+        statusEl.textContent = 'Aucune caméra trouvée sur cet appareil';
+        return;
+      }
+      const back = devices.find(d => /back|rear|environment/i.test(d.label));
+      const camId = back ? back.id : devices[devices.length - 1].id;
+      scanner.start(camId, { fps: 10, qrbox: 250 }, onScan)
+        .catch(err => {
+          statusEl.className = 'bad';
+          statusEl.textContent = 'Caméra refusée : ' + (err && err.message ? err.message : err);
+        });
+    }).catch(err => {
+      statusEl.className = 'bad';
+      statusEl.textContent = 'Impossible d\'accéder à la caméra';
+    });
+  }
+
+  function onScan(decodedText) {
+    if (busy) return;
+    busy = true;
+    scanner.pause(true);
+    statusEl.className = '';
+    statusEl.innerHTML = 'Vérification…';
+
+    fetch(baseUrl + '?action=scan&id=' + encodeURIComponent(decodedText))
+      .then(r => r.json())
+      .then(showResult)
+      .catch(() => {
+        statusEl.className = 'bad';
+        statusEl.textContent = 'Erreur réseau, réessaie';
+        setTimeout(reset, 2000);
+      });
+  }
+
+  function showResult(data) {
+    let cls = 'bad', icon = '❌';
+    if (data.status === 'VALIDE') { cls = 'ok'; icon = '✅'; }
+    else if (data.status === 'DEJA_UTILISE') { cls = 'dup'; icon = '⚠️'; }
+
+    statusEl.className = cls;
+    statusEl.innerHTML = icon + ' ' + data.message +
+      '<div id="detail">' +
+      (data.id ? 'ID : ' + data.id + '<br>' : '') +
+      (data.categorie ? 'Catégorie : ' + data.categorie + '<br>' : '') +
+      (data.dateValidation ? 'Heure : ' + data.dateValidation : '') +
+      '</div>';
+
+    if (navigator.vibrate) navigator.vibrate(data.status === 'VALIDE' ? 200 : [100,60,100]);
+    setTimeout(reset, 2200);
+  }
+
+  function reset() {
+    statusEl.className = '';
+    statusEl.textContent = 'Prêt à scanner…';
+    busy = false;
+    if (scanner) scanner.resume();
+  }
+
+  loadSaved();
+</script>
+</body>
+</html>
